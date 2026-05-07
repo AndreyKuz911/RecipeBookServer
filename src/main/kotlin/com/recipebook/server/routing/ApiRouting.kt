@@ -6,11 +6,13 @@ import com.recipebook.server.features.auth.RegisterRequest
 import com.recipebook.server.features.comments.CommentService
 import com.recipebook.server.features.comments.CreateCommentRequest
 import com.recipebook.server.features.common.badRequest
+import com.recipebook.server.features.read.ReadService
 import com.recipebook.server.features.recipes.RatingRequest
 import com.recipebook.server.features.recipes.RecipeService
 import com.recipebook.server.features.recipes.RecipeUpsertRequest
 import com.recipebook.server.features.users.UpdateProfileRequest
 import com.recipebook.server.features.users.UserService
+import com.recipebook.server.features.write.MutationService
 import com.recipebook.server.security.UserPrincipal
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
@@ -39,6 +41,8 @@ fun Application.configureRouting(
     userService: UserService,
     recipeService: RecipeService,
     commentService: CommentService,
+    readService: ReadService,
+    mutationService: MutationService,
 ) {
     routing {
         staticFiles("/uploads", File("uploads"))
@@ -70,7 +74,7 @@ fun Application.configureRouting(
                     val currentUserId = call.principal<UserPrincipal>()?.userId
 
                     call.respond(
-                        recipeService.listRecipes(
+                        readService.listRecipes(
                             page = page,
                             limit = limit,
                             query = query,
@@ -84,12 +88,12 @@ fun Application.configureRouting(
 
                 get("/{id}") {
                     val recipeId = call.uuidParam("id")
-                    call.respond(recipeService.getRecipe(recipeId, call.principal<UserPrincipal>()?.userId))
+                    call.respond(readService.getRecipe(recipeId, call.principal<UserPrincipal>()?.userId))
                 }
 
                 get("/{id}/comments") {
                     val recipeId = call.uuidParam("id")
-                    call.respond(commentService.listComments(recipeId))
+                    call.respond(readService.listComments(recipeId))
                 }
             }
 
@@ -97,48 +101,48 @@ fun Application.configureRouting(
                 post {
                     val userId = call.requirePrincipal().userId
                     val request = call.receive<RecipeUpsertRequest>()
-                    call.respond(HttpStatusCode.Created, recipeService.createRecipe(userId, request))
+                    call.respond(HttpStatusCode.Created, mutationService.createRecipe(userId, request))
                 }
                 put("/{id}") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
                     val request = call.receive<RecipeUpsertRequest>()
-                    call.respond(recipeService.updateRecipe(recipeId, userId, request))
+                    call.respond(mutationService.updateRecipe(recipeId, userId, request))
                 }
                 delete("/{id}") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
-                    recipeService.deleteRecipe(recipeId, userId)
+                    mutationService.deleteRecipe(recipeId, userId)
                     call.respond(HttpStatusCode.OK, mapOf("status" to "deleted"))
                 }
                 post("/{id}/rating") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
                     val request = call.receive<RatingRequest>()
-                    call.respond(recipeService.setRating(recipeId, userId, request.value))
+                    call.respond(mutationService.setRating(recipeId, userId, request))
                 }
                 delete("/{id}/rating") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
-                    recipeService.removeRating(recipeId, userId)
+                    mutationService.removeRating(recipeId, userId)
                     call.respond(HttpStatusCode.OK, mapOf("status" to "removed"))
                 }
                 post("/{id}/favorite") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
-                    call.respond(recipeService.addFavorite(recipeId, userId))
+                    call.respond(mutationService.addFavorite(recipeId, userId))
                 }
                 delete("/{id}/favorite") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
-                    recipeService.removeFavorite(recipeId, userId)
+                    mutationService.removeFavorite(recipeId, userId)
                     call.respond(HttpStatusCode.OK, mapOf("status" to "removed"))
                 }
                 post("/{id}/comments") {
                     val userId = call.requirePrincipal().userId
                     val recipeId = call.uuidParam("id")
                     val request = call.receive<CreateCommentRequest>()
-                    call.respond(HttpStatusCode.Created, commentService.createComment(recipeId, userId, request))
+                    call.respond(HttpStatusCode.Created, mutationService.createComment(recipeId, userId, request))
                 }
             }
         }
@@ -175,43 +179,43 @@ fun Application.configureRouting(
 
             route("/users") {
                 get("/me") {
-                    call.respond(userService.getCurrentProfile(call.requirePrincipal().userId))
+                    call.respond(readService.getCurrentProfile(call.requirePrincipal().userId))
                 }
                 put("/me") {
                     val request = call.receive<UpdateProfileRequest>()
-                    call.respond(userService.updateProfile(call.requirePrincipal().userId, request))
+                    call.respond(mutationService.updateProfile(call.requirePrincipal().userId, request))
                 }
                 get("/{id}") {
                     val targetId = call.uuidParam("id")
-                    call.respond(userService.getProfile(targetId, call.requirePrincipal().userId))
+                    call.respond(readService.getProfile(targetId, call.requirePrincipal().userId))
                 }
                 get("/{id}/recipes") {
                     val targetId = call.uuidParam("id")
-                    call.respond(recipeService.listRecipesByAuthor(targetId, call.requirePrincipal().userId))
+                    call.respond(readService.listRecipesByAuthor(targetId, call.requirePrincipal().userId))
                 }
                 post("/{id}/follow") {
                     val targetId = call.uuidParam("id")
-                    userService.follow(call.requirePrincipal().userId, targetId)
+                    mutationService.follow(call.requirePrincipal().userId, targetId)
                     call.respond(HttpStatusCode.OK, mapOf("status" to "followed"))
                 }
                 delete("/{id}/follow") {
                     val targetId = call.uuidParam("id")
-                    userService.unfollow(call.requirePrincipal().userId, targetId)
+                    mutationService.unfollow(call.requirePrincipal().userId, targetId)
                     call.respond(HttpStatusCode.OK, mapOf("status" to "unfollowed"))
                 }
             }
 
             get("/feed") {
-                call.respond(recipeService.listFeed(call.requirePrincipal().userId))
+                call.respond(readService.listFeed(call.requirePrincipal().userId))
             }
 
             get("/favorites") {
-                call.respond(recipeService.listFavorites(call.requirePrincipal().userId))
+                call.respond(readService.listFavorites(call.requirePrincipal().userId))
             }
 
             delete("/comments/{id}") {
                 val commentId = call.uuidParam("id")
-                commentService.deleteComment(commentId, call.requirePrincipal().userId)
+                mutationService.deleteComment(commentId, call.requirePrincipal().userId)
                 call.respond(HttpStatusCode.OK, mapOf("status" to "deleted"))
             }
         }
