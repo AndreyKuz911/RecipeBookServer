@@ -11,7 +11,6 @@ data class JwtConfig(
 
 data class AppConfig(
     val databaseUrl: String,
-    val databaseFallbackLocal: Boolean,
     val jwt: JwtConfig,
     val autoCreateSchema: Boolean,
     val seedOnStart: Boolean,
@@ -33,7 +32,6 @@ object ConfigLoader {
 
         return AppConfig(
             databaseUrl = normalizeJdbcUrl(get("DATABASE_URL")),
-            databaseFallbackLocal = get("DATABASE_FALLBACK_LOCAL", "false").toBooleanStrictOrNull() ?: false,
             jwt = JwtConfig(
                 secret = get("JWT_SECRET"),
                 issuer = get("JWT_ISSUER", "recipebook-server"),

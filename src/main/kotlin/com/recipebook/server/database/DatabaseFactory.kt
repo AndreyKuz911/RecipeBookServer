@@ -4,18 +4,23 @@ import com.recipebook.server.config.AppConfig
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import java.net.URI
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.sql.SQLException
 import kotlin.math.min
 import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.DatabaseConfig
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.vendors.PostgreSQLDialect
 import org.slf4j.LoggerFactory
 
 object DatabaseFactory {
-    private const val LOCAL_FALLBACK_URL =
-        "jdbc:h2:file:./data/recipebook-local;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
     private val logger = LoggerFactory.getLogger(DatabaseFactory::class.java)
+
     @Volatile
     private var dataSourceRef: HikariDataSource? = null
+
     @Volatile
     private var databaseUrlRef: String? = null
 
@@ -26,38 +31,11 @@ object DatabaseFactory {
     )
 
     fun init(config: AppConfig) {
-        if (config.databaseUrl.contains("-pooler.", ignoreCase = true)) {
-            logger.warn(
-                "Detected Neon pooler URL. For Ktor + HikariCP use direct connection string (without -pooler).",
-            )
-        }
-        if (config.databaseFallbackLocal) {
-            logger.warn("DATABASE_FALLBACK_LOCAL=true. Starting server with local H2 database.")
-            connectWithRetries(
-                url = LOCAL_FALLBACK_URL,
-                autoCreateSchema = true,
-                maxAttempts = 2,
-            )
-            return
-        }
-
-        try {
-            connectWithRetries(
-                url = config.databaseUrl,
-                autoCreateSchema = config.autoCreateSchema,
-                maxAttempts = 6,
-            )
-        } catch (primaryError: Throwable) {
-            logger.error(
-                "Primary database is unstable ({}). Falling back to local H2 database for development.",
-                primaryError.message ?: primaryError::class.simpleName ?: "unknown error",
-            )
-            connectWithRetries(
-                url = LOCAL_FALLBACK_URL,
-                autoCreateSchema = true,
-                maxAttempts = 3,
-            )
-        }
+        connectWithRetries(
+            url = config.databaseUrl,
+            autoCreateSchema = config.autoCreateSchema,
+            maxAttempts = 6,
+        )
     }
 
     private fun connectWithRetries(
@@ -73,7 +51,17 @@ object DatabaseFactory {
                 dataSource = hikari(url)
                 dataSourceRef = dataSource
                 databaseUrlRef = url
-                Database.connect(dataSource)
+
+                Database.connect(
+                    datasource = dataSource,
+                    databaseConfig = DatabaseConfig {
+                        if (!url.startsWith("jdbc:h2")) {
+                            explicitDialect = PostgreSQLDialect()
+                        }
+                        defaultMaxAttempts = 1
+                    },
+                )
+
                 if (autoCreateSchema) {
                     transaction {
                         SchemaUtils.create(
@@ -86,6 +74,7 @@ object DatabaseFactory {
                         )
                     }
                 }
+
                 if (attempt > 1) {
                     logger.info("Database connection recovered on attempt {}/{}", attempt, maxAttempts)
                 }
@@ -143,31 +132,72 @@ object DatabaseFactory {
         val url = databaseUrlRef ?: error("Database URL is not initialized")
         val old = dataSourceRef
         val fresh = hikari(url)
-        Database.connect(fresh)
+        Database.connect(
+            datasource = fresh,
+            databaseConfig = DatabaseConfig {
+                if (!url.startsWith("jdbc:h2")) {
+                    explicitDialect = PostgreSQLDialect()
+                }
+                defaultMaxAttempts = 1
+            },
+        )
         dataSourceRef = fresh
         old?.close()
         logger.warn("Database pool was recreated after a connection failure")
     }
 
+    fun <T> withDbRetry(maxAttempts: Int = 2, block: () -> T): T {
+        require(maxAttempts >= 1) { "maxAttempts must be >= 1" }
+        var lastError: Throwable? = null
+        repeat(maxAttempts) { attempt ->
+            try {
+                return block()
+            } catch (error: Throwable) {
+                lastError = error
+                val retryable = isRetryableDbFailure(error)
+                val isLast = attempt == maxAttempts - 1
+                if (!retryable || isLast) {
+                    throw error
+                }
+                logger.warn(
+                    "Retryable database failure detected (attempt {}/{}): {}. Retrying.",
+                    attempt + 1,
+                    maxAttempts,
+                    error.message ?: error::class.simpleName ?: "unknown error",
+                )
+                Thread.sleep(300L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IllegalStateException("Database operation failed")
+    }
+
     private fun hikari(url: String): HikariDataSource {
         val connection = parseJdbcConnection(url)
         val isH2 = connection.jdbcUrl.startsWith("jdbc:h2")
+        val isPooler = connection.jdbcUrl.contains("-pooler.", ignoreCase = true)
         val config = HikariConfig().apply {
             jdbcUrl = connection.jdbcUrl
             connection.username?.let { username = it }
             connection.password?.let { password = it }
+
             if (!isH2) {
                 addDataSourceProperty("gssEncMode", "disable")
                 addDataSourceProperty("tcpKeepAlive", "true")
                 addDataSourceProperty("connectTimeout", "10")
-                addDataSourceProperty("socketTimeout", "20")
+                addDataSourceProperty("socketTimeout", "30")
+                if (isPooler) {
+                    addDataSourceProperty("preparedStatementCacheQueries", "0")
+                    addDataSourceProperty("preparedStatementCacheSizeMiB", "0")
+                    addDataSourceProperty("preferQueryMode", "simple")
+                }
             }
+
             driverClassName = if (isH2) "org.h2.Driver" else "org.postgresql.Driver"
             maximumPoolSize = 5
             minimumIdle = 1
             connectionTimeout = 30_000
             initializationFailTimeout = 60_000
-            maxLifetime = 30 * 60_000
+            maxLifetime = 10 * 60_000
             idleTimeout = 5 * 60_000
             keepaliveTime = 30_000
             validationTimeout = 5_000
@@ -194,5 +224,27 @@ object DatabaseFactory {
             username = username,
             password = password,
         )
+    }
+
+    private fun isRetryableDbFailure(error: Throwable): Boolean {
+        var cause: Throwable? = error
+        while (cause != null) {
+            when (cause) {
+                is SocketTimeoutException, is SocketException -> return true
+                is SQLException -> {
+                    if (
+                        cause.sqlState == "08006" ||
+                        cause.sqlState == "08001" ||
+                        cause.sqlState == "57P01" ||
+                        cause.sqlState == "57014" ||
+                        cause.sqlState == "55P03"
+                    ) {
+                        return true
+                    }
+                }
+            }
+            cause = cause.cause
+        }
+        return false
     }
 }
