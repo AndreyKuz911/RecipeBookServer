@@ -1,6 +1,7 @@
 package com.recipebook.server.features.recipes
 
 import com.recipebook.server.database.CommentsTable
+import com.recipebook.server.database.DatabaseFactory
 import com.recipebook.server.database.FavoritesTable
 import com.recipebook.server.database.FollowsTable
 import com.recipebook.server.database.RatingsTable
@@ -53,7 +54,7 @@ class RecipeService {
         val parsedTimeRange = parseTimeRange(timeRange)
         val parsedSort = parseSort(sort)
 
-        val items = transaction {
+        val items = dbTx {
             fetchRecipeSnapshots(currentUserId)
         }.filter {
             (normalizedQuery.isBlank() || it.title.contains(normalizedQuery, ignoreCase = true)) &&
@@ -70,13 +71,13 @@ class RecipeService {
         )
     }
 
-    fun getRecipe(recipeId: UUID, currentUserId: UUID?): RecipeDetailsDto = transaction {
+    fun getRecipe(recipeId: UUID, currentUserId: UUID?): RecipeDetailsDto = dbTx {
         val recipe = fetchRecipeSnapshots(currentUserId).firstOrNull { it.id == recipeId }
             ?: notFound("Recipe not found")
         recipe.toDetailsDto()
     }
 
-    fun createRecipe(authorId: UUID, request: RecipeUpsertRequest): RecipeDetailsDto = transaction {
+    fun createRecipe(authorId: UUID, request: RecipeUpsertRequest): RecipeDetailsDto = dbTx {
         validateRecipeRequest(request)
         ensureUserExists(authorId)
 
@@ -99,7 +100,7 @@ class RecipeService {
         fetchRecipeSnapshots(authorId).first { it.id == recipeId }.toDetailsDto()
     }
 
-    fun updateRecipe(recipeId: UUID, authorId: UUID, request: RecipeUpsertRequest): RecipeDetailsDto = transaction {
+    fun updateRecipe(recipeId: UUID, authorId: UUID, request: RecipeUpsertRequest): RecipeDetailsDto = dbTx {
         validateRecipeRequest(request)
         val recipe = RecipesTable.selectAll().where { RecipesTable.id eq recipeId }.singleOrNull()
             ?: notFound("Recipe not found")
@@ -121,7 +122,7 @@ class RecipeService {
         fetchRecipeSnapshots(authorId).first { it.id == recipeId }.toDetailsDto()
     }
 
-    fun deleteRecipe(recipeId: UUID, actorId: UUID) = transaction {
+    fun deleteRecipe(recipeId: UUID, actorId: UUID) = dbTx {
         val recipe = RecipesTable.selectAll().where { RecipesTable.id eq recipeId }.singleOrNull()
             ?: notFound("Recipe not found")
         if (recipe[RecipesTable.authorId].value != actorId) {
@@ -130,7 +131,7 @@ class RecipeService {
         RecipesTable.deleteWhere { RecipesTable.id eq recipeId }
     }
 
-    fun setRating(recipeId: UUID, userId: UUID, value: Int): RecipeDetailsDto = transaction {
+    fun setRating(recipeId: UUID, userId: UUID, value: Int): RecipeDetailsDto = dbTx {
         ensureAuthenticatedUserExists(userId)
         if (value != 1 && value != -1) {
             badRequest("Rating value must be 1 or -1")
@@ -161,14 +162,14 @@ class RecipeService {
         fetchRecipeSnapshots(userId).first { it.id == recipeId }.toDetailsDto()
     }
 
-    fun removeRating(recipeId: UUID, userId: UUID) = transaction {
+    fun removeRating(recipeId: UUID, userId: UUID) = dbTx {
         ensureAuthenticatedUserExists(userId)
         RatingsTable.deleteWhere {
             (RatingsTable.recipeId eq recipeId) and (RatingsTable.userId eq userId)
         }
     }
 
-    fun addFavorite(recipeId: UUID, userId: UUID): RecipeDetailsDto = transaction {
+    fun addFavorite(recipeId: UUID, userId: UUID): RecipeDetailsDto = dbTx {
         ensureAuthenticatedUserExists(userId)
         requireRecipe(recipeId)
         FavoritesTable.insertIgnore {
@@ -178,14 +179,14 @@ class RecipeService {
         fetchRecipeSnapshots(userId).first { it.id == recipeId }.toDetailsDto()
     }
 
-    fun removeFavorite(recipeId: UUID, userId: UUID) = transaction {
+    fun removeFavorite(recipeId: UUID, userId: UUID) = dbTx {
         ensureAuthenticatedUserExists(userId)
         FavoritesTable.deleteWhere {
             (FavoritesTable.recipeId eq recipeId) and (FavoritesTable.userId eq userId)
         }
     }
 
-    fun listFavorites(userId: UUID): List<RecipeSummaryDto> = transaction {
+    fun listFavorites(userId: UUID): List<RecipeSummaryDto> = dbTx {
         ensureAuthenticatedUserExists(userId)
         val favoriteIds = FavoritesTable.selectAll().where { FavoritesTable.userId eq userId }
             .map { it[FavoritesTable.recipeId].value }
@@ -196,33 +197,35 @@ class RecipeService {
             .map { it.toSummaryDto() }
     }
 
-    fun listFeed(userId: UUID): List<RecipeSummaryDto> = transaction {
+    fun listFeed(userId: UUID): List<RecipeSummaryDto> = dbTx {
         ensureAuthenticatedUserExists(userId)
         val followingIds = FollowsTable.selectAll().where { FollowsTable.followerId eq userId }
             .map { it[FollowsTable.followingId].value }
             .toSet()
-        if (followingIds.isEmpty()) return@transaction emptyList()
-
-        fetchRecipeSnapshots(userId)
-            .filter { it.author.id in followingIds.map(UUID::toString).toSet() }
-            .sortedByDescending { it.createdAt }
-            .map { it.toSummaryDto() }
+        if (followingIds.isEmpty()) {
+            emptyList()
+        } else {
+            fetchRecipeSnapshots(userId)
+                .filter { it.author.id in followingIds.map(UUID::toString).toSet() }
+                .sortedByDescending { it.createdAt }
+                .map { it.toSummaryDto() }
+        }
     }
 
-    fun listRecipesByAuthor(authorId: UUID, currentUserId: UUID?): List<RecipeSummaryDto> = transaction {
+    fun listRecipesByAuthor(authorId: UUID, currentUserId: UUID?): List<RecipeSummaryDto> = dbTx {
         fetchRecipeSnapshots(currentUserId)
             .filter { it.author.id == authorId.toString() }
             .sortedByDescending { it.createdAt }
             .map { it.toSummaryDto() }
     }
 
-    fun isRecipeAuthor(recipeId: UUID, userId: UUID): Boolean = transaction {
+    fun isRecipeAuthor(recipeId: UUID, userId: UUID): Boolean = dbTx {
         RecipesTable.selectAll().where {
             (RecipesTable.id eq recipeId) and (RecipesTable.authorId eq userId)
         }.count() > 0
     }
 
-    fun getRecipeAuthorId(recipeId: UUID): UUID = transaction {
+    fun getRecipeAuthorId(recipeId: UUID): UUID = dbTx {
         RecipesTable.selectAll().where { RecipesTable.id eq recipeId }.singleOrNull()
             ?.get(RecipesTable.authorId)?.value
             ?: notFound("Recipe not found")
@@ -325,6 +328,12 @@ class RecipeService {
                 isFavorite = row.id in favorites,
                 myRating = myRatings[row.id],
             )
+        }
+    }
+
+    private inline fun <T> dbTx(crossinline block: () -> T): T {
+        return DatabaseFactory.withDbRetry {
+            transaction { block() }
         }
     }
 }

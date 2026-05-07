@@ -1,6 +1,7 @@
 package com.recipebook.server.features.users
 
 import com.recipebook.server.database.FollowsTable
+import com.recipebook.server.database.DatabaseFactory
 import com.recipebook.server.database.RecipesTable
 import com.recipebook.server.database.UsersTable
 import com.recipebook.server.features.common.badRequest
@@ -19,16 +20,16 @@ import org.jetbrains.exposed.sql.update
 import java.util.UUID
 
 class UserService {
-    fun getCurrentProfile(userId: UUID): UserProfileDto = transaction {
+    fun getCurrentProfile(userId: UUID): UserProfileDto = dbTx {
         ensureAuthenticatedUserExists(userId)
         getProfileInternal(userId, userId)
     }
 
-    fun getProfile(targetUserId: UUID, viewerId: UUID?): UserProfileDto = transaction {
+    fun getProfile(targetUserId: UUID, viewerId: UUID?): UserProfileDto = dbTx {
         getProfileInternal(targetUserId, viewerId)
     }
 
-    fun updateProfile(userId: UUID, request: UpdateProfileRequest): UserProfileDto = transaction {
+    fun updateProfile(userId: UUID, request: UpdateProfileRequest): UserProfileDto = dbTx {
         ensureAuthenticatedUserExists(userId)
         validateUpdate(request)
         val existing = UsersTable.selectAll().where { UsersTable.id eq userId }.singleOrNull()
@@ -51,7 +52,7 @@ class UserService {
         getProfileInternal(existing[UsersTable.id].value, existing[UsersTable.id].value)
     }
 
-    fun follow(followerId: UUID, followingId: UUID) = transaction {
+    fun follow(followerId: UUID, followingId: UUID) = dbTx {
         ensureAuthenticatedUserExists(followerId)
         if (followerId == followingId) {
             badRequest("You cannot follow yourself")
@@ -63,14 +64,14 @@ class UserService {
         }
     }
 
-    fun unfollow(followerId: UUID, followingId: UUID) = transaction {
+    fun unfollow(followerId: UUID, followingId: UUID) = dbTx {
         ensureAuthenticatedUserExists(followerId)
         FollowsTable.deleteWhere {
             (FollowsTable.followerId eq followerId) and (FollowsTable.followingId eq followingId)
         }
     }
 
-    fun getUserSummary(userId: UUID): UserSummaryDto = transaction {
+    fun getUserSummary(userId: UUID): UserSummaryDto = dbTx {
         val row = UsersTable.selectAll().where { UsersTable.id eq userId }.singleOrNull()
             ?: notFound("User not found")
         row.toSummary()
@@ -120,6 +121,12 @@ class UserService {
             followingCount = followingCount,
             isFollowing = isFollowing,
         )
+    }
+
+    private inline fun <T> dbTx(crossinline block: () -> T): T {
+        return DatabaseFactory.withDbRetry {
+            transaction { block() }
+        }
     }
 }
 

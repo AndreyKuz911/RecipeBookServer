@@ -1,6 +1,7 @@
 package com.recipebook.server.features.comments
 
 import com.recipebook.server.database.CommentsTable
+import com.recipebook.server.database.DatabaseFactory
 import com.recipebook.server.database.RecipesTable
 import com.recipebook.server.database.UsersTable
 import com.recipebook.server.database.now
@@ -22,7 +23,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import java.util.UUID
 
 class CommentService {
-    fun listComments(recipeId: UUID): List<CommentDto> = transaction {
+    fun listComments(recipeId: UUID): List<CommentDto> = dbTx {
         ensureRecipeExists(recipeId)
         val rows = (CommentsTable innerJoin UsersTable).selectAll()
             .where { CommentsTable.recipeId eq recipeId }
@@ -35,7 +36,7 @@ class CommentService {
         }
     }
 
-    fun createComment(recipeId: UUID, authorId: UUID, request: CreateCommentRequest): CommentDto = transaction {
+    fun createComment(recipeId: UUID, authorId: UUID, request: CreateCommentRequest): CommentDto = dbTx {
         ensureAuthenticatedUserExists(authorId)
         val text = request.text.trim()
         if (text.isBlank() || text.length > 500) {
@@ -67,7 +68,7 @@ class CommentService {
         toCommentFlat(row)
     }
 
-    fun deleteComment(commentId: UUID, actorId: UUID) = transaction {
+    fun deleteComment(commentId: UUID, actorId: UUID) = dbTx {
         val comment = CommentsTable.selectAll().where { CommentsTable.id eq commentId }.singleOrNull()
             ?: notFound("Comment not found")
 
@@ -104,4 +105,10 @@ class CommentService {
         createdAt = row[CommentsTable.createdAt].toString(),
         author = row.toSummary(),
     )
+
+    private inline fun <T> dbTx(crossinline block: () -> T): T {
+        return DatabaseFactory.withDbRetry {
+            transaction { block() }
+        }
+    }
 }
