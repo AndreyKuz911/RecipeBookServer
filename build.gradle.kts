@@ -39,7 +39,6 @@ dependencies {
     implementation("org.jetbrains.exposed:exposed-jdbc:0.61.0")
     implementation("org.jetbrains.exposed:exposed-java-time:0.61.0")
     implementation("org.postgresql:postgresql:42.7.7")
-    implementation("com.h2database:h2:2.3.232")
     implementation("com.zaxxer:HikariCP:6.3.0")
     implementation("io.github.cdimascio:dotenv-kotlin:6.5.1")
     implementation("org.mindrot:jbcrypt:0.4")
