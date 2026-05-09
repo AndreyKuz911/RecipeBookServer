@@ -3,15 +3,13 @@ package com.recipebook.server.routing
 import com.recipebook.server.features.auth.AuthService
 import com.recipebook.server.features.auth.LoginRequest
 import com.recipebook.server.features.auth.RegisterRequest
-import com.recipebook.server.features.comments.CommentService
 import com.recipebook.server.features.comments.CreateCommentRequest
 import com.recipebook.server.features.common.badRequest
+import com.recipebook.server.features.news.NewsService
 import com.recipebook.server.features.read.ReadService
 import com.recipebook.server.features.recipes.RatingRequest
-import com.recipebook.server.features.recipes.RecipeService
 import com.recipebook.server.features.recipes.RecipeUpsertRequest
 import com.recipebook.server.features.users.UpdateProfileRequest
-import com.recipebook.server.features.users.UserService
 import com.recipebook.server.features.write.MutationService
 import com.recipebook.server.security.UserPrincipal
 import io.ktor.http.HttpStatusCode
@@ -38,11 +36,9 @@ import java.util.UUID
 
 fun Application.configureRouting(
     authService: AuthService,
-    userService: UserService,
-    recipeService: RecipeService,
-    commentService: CommentService,
     readService: ReadService,
     mutationService: MutationService,
+    newsService: NewsService,
 ) {
     routing {
         staticFiles("/uploads", File("uploads"))
@@ -60,6 +56,11 @@ fun Application.configureRouting(
                 val request = call.receive<LoginRequest>()
                 call.respond(authService.login(request))
             }
+        }
+
+        get("/news") {
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 30
+            call.respond(newsService.listNews(limit = limit))
         }
 
         route("/recipes") {
