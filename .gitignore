@@ -14,3 +14,13 @@
 .cxx
 local.properties
 .env
+
+# runtime/debug artifacts
+*.log
+run_*.log
+server_*.log
+jstack_*.txt
+Tmp*.java
+Tmp*.class
+tmp_jshell.jsh
+uploads/
