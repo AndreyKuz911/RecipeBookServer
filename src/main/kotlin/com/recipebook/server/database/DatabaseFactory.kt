@@ -74,6 +74,7 @@ object DatabaseFactory {
                         )
                     }
                 }
+                ensureIndexesIfNeeded(dataSource)
 
                 if (attempt > 1) {
                     logger.info("Database connection recovered on attempt {}/{}", attempt, maxAttempts)
@@ -165,7 +166,10 @@ object DatabaseFactory {
                     maxAttempts,
                     error.message ?: error::class.simpleName ?: "unknown error",
                 )
-                Thread.sleep(300L * (attempt + 1))
+                // Soft-evict stale idle connections without tearing down active ones.
+                // Immediate pool recreation can close sockets for in-flight requests.
+                runCatching { dataSourceRef?.hikariPoolMXBean?.softEvictConnections() }
+                Thread.sleep(200L * (attempt + 1))
             }
         }
         throw lastError ?: IllegalStateException("Database operation failed")
@@ -183,8 +187,8 @@ object DatabaseFactory {
             if (!isH2) {
                 addDataSourceProperty("gssEncMode", "disable")
                 addDataSourceProperty("tcpKeepAlive", "true")
-                addDataSourceProperty("connectTimeout", "10")
-                addDataSourceProperty("socketTimeout", "30")
+                addDataSourceProperty("connectTimeout", "5")
+                addDataSourceProperty("socketTimeout", "8")
                 if (isPooler) {
                     addDataSourceProperty("preparedStatementCacheQueries", "0")
                     addDataSourceProperty("preparedStatementCacheSizeMiB", "0")
@@ -193,13 +197,13 @@ object DatabaseFactory {
             }
 
             driverClassName = if (isH2) "org.h2.Driver" else "org.postgresql.Driver"
-            maximumPoolSize = 5
+            maximumPoolSize = if (isPooler) 2 else 6
             minimumIdle = 1
-            connectionTimeout = 30_000
+            connectionTimeout = 8_000
             initializationFailTimeout = 60_000
-            maxLifetime = 10 * 60_000
+            maxLifetime = 30 * 60_000
             idleTimeout = 5 * 60_000
-            keepaliveTime = 30_000
+            keepaliveTime = 120_000
             validationTimeout = 5_000
             connectionTestQuery = "SELECT 1"
             isAutoCommit = true
@@ -224,6 +228,25 @@ object DatabaseFactory {
             username = username,
             password = password,
         )
+    }
+
+    private fun ensureIndexesIfNeeded(dataSource: HikariDataSource) {
+        if (!dataSource.jdbcUrl.startsWith("jdbc:postgresql://")) return
+        runCatching {
+            dataSource.connection.use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_recipes_author_created ON recipes(author_id, created_at DESC)")
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_ratings_recipe ON ratings(recipe_id)")
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_ratings_recipe_value ON ratings(recipe_id, value)")
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_comments_recipe_created ON comments(recipe_id, created_at DESC)")
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id)")
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id)")
+                    statement.execute("CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id)")
+                }
+            }
+        }.onFailure { error ->
+            logger.warn("Unable to ensure db indexes: {}", error.message ?: "unknown")
+        }
     }
 
     private fun isRetryableDbFailure(error: Throwable): Boolean {

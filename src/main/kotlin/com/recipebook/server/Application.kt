@@ -4,10 +4,8 @@ import com.recipebook.server.config.ConfigLoader
 import com.recipebook.server.database.DatabaseFactory
 import com.recipebook.server.database.SeedData
 import com.recipebook.server.features.auth.AuthService
-import com.recipebook.server.features.comments.CommentService
+import com.recipebook.server.features.news.NewsService
 import com.recipebook.server.features.read.ReadService
-import com.recipebook.server.features.recipes.RecipeService
-import com.recipebook.server.features.users.UserService
 import com.recipebook.server.features.write.MutationService
 import com.recipebook.server.plugins.configureHttp
 import com.recipebook.server.plugins.configureMonitoring
@@ -26,13 +24,12 @@ fun main(args: Array<String>) {
 fun Application.module() {
     val appConfig = ConfigLoader.load()
     val passwordHasher = PasswordHasher()
-    val userService = UserService()
+    val userService = com.recipebook.server.features.users.UserService()
     val jwtService = JwtService(appConfig.jwt)
     val authService = AuthService(passwordHasher, jwtService, userService)
-    val recipeService = RecipeService()
-    val commentService = CommentService()
     val readService = ReadService()
     val mutationService = MutationService(readService)
+    val newsService = NewsService()
 
     DatabaseFactory.init(appConfig)
     if (appConfig.autoCreateSchema && appConfig.seedOnStart) {
@@ -43,5 +40,5 @@ fun Application.module() {
     configureMonitoring()
     configureHttp()
     configureSecurity(appConfig, jwtService)
-    configureRouting(authService, userService, recipeService, commentService, readService, mutationService)
+    configureRouting(authService, readService, mutationService, newsService)
 }
