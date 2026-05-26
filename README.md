@@ -31,15 +31,15 @@ Ktor backend для курсового проекта "Книга рецепто
 
 1. Создайте проект в Neon.
 2. Откройте `Connect`.
-3. Отключите `Connection pooling`.
-4. Скопируйте `direct connection string`.
+3. Оставьте `Connection pooling` включенным.
+4. Скопируйте `pooled connection string` (`-pooler` в хосте).
 5. Создайте файл `.env` рядом с `build.gradle.kts`.
 6. Заполните переменные по образцу из `.env.example`.
 
 Пример:
 
 ```env
-DATABASE_URL=jdbc:postgresql://USER:PASSWORD@HOST/DB_NAME?sslmode=require
+DATABASE_URL=jdbc:postgresql://USER:PASSWORD@EP-EXAMPLE-1234-pooler.us-east-1.aws.neon.tech/DB_NAME?sslmode=require&channel_binding=require
 JWT_SECRET=super_secret_key
 JWT_ISSUER=recipebook-server
 JWT_AUDIENCE=recipebook-client
