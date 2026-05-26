@@ -179,18 +179,19 @@ class ReadService {
                       COALESCE(stats.likes_count, 0) AS likes_count,
                       COALESCE(stats.dislikes_count, 0) AS dislikes_count,
                       CASE WHEN fav.recipe_id IS NULL THEN FALSE ELSE TRUE END AS is_favorite,
-                      my.value AS my_rating
+                      my."value" AS my_rating
                     FROM recipes r
                     JOIN users u ON u.id = r.author_id
-                    LEFT JOIN LATERAL (
+                    LEFT JOIN (
                       SELECT
-                        SUM(CASE WHEN rt.value = 1 THEN 1 ELSE 0 END)::int AS likes_count,
-                        SUM(CASE WHEN rt.value = -1 THEN 1 ELSE 0 END)::int AS dislikes_count
+                        rt.recipe_id,
+                        SUM(CASE WHEN rt."value" = 1 THEN 1 ELSE 0 END)::int AS likes_count,
+                        SUM(CASE WHEN rt."value" = -1 THEN 1 ELSE 0 END)::int AS dislikes_count
                       FROM ratings rt
-                      WHERE rt.recipe_id = r.id
-                    ) stats ON TRUE
-                    LEFT JOIN favorites fav ON fav.recipe_id = r.id AND fav.user_id = ?::uuid
-                    LEFT JOIN ratings my ON my.recipe_id = r.id AND my.user_id = ?::uuid
+                      GROUP BY rt.recipe_id
+                    ) stats ON stats.recipe_id = r.id
+                    LEFT JOIN favorites fav ON fav.recipe_id = r.id AND fav.user_id = ?
+                    LEFT JOIN ratings my ON my.recipe_id = r.id AND my.user_id = ?
                     WHERE r.author_id = ?
                     ORDER BY r.created_at DESC
                 """.trimIndent()
@@ -228,11 +229,11 @@ class ReadService {
                       (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS followers_count,
                       (SELECT COUNT(*) FROM follows f WHERE f.follower_id = u.id) AS following_count,
                       CASE
-                        WHEN ?::uuid IS NULL OR ?::uuid = u.id THEN FALSE
+                        WHEN ? IS NULL OR ? = u.id THEN FALSE
                         ELSE EXISTS(
                           SELECT 1
                           FROM follows f2
-                          WHERE f2.follower_id = ?::uuid AND f2.following_id = u.id
+                          WHERE f2.follower_id = ? AND f2.following_id = u.id
                         )
                       END AS is_following
                     FROM users u
@@ -384,18 +385,19 @@ class ReadService {
               COALESCE(stats.likes_count, 0) AS likes_count,
               COALESCE(stats.dislikes_count, 0) AS dislikes_count,
               CASE WHEN fav.recipe_id IS NULL THEN FALSE ELSE TRUE END AS is_favorite,
-              my.value AS my_rating
+              my."value" AS my_rating
             FROM recipes r
             JOIN users u ON u.id = r.author_id
-            LEFT JOIN LATERAL (
+            LEFT JOIN (
               SELECT
-                SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END)::int AS likes_count,
-                SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END)::int AS dislikes_count
+                recipe_id,
+                SUM(CASE WHEN "value" = 1 THEN 1 ELSE 0 END)::int AS likes_count,
+                SUM(CASE WHEN "value" = -1 THEN 1 ELSE 0 END)::int AS dislikes_count
               FROM ratings
-              WHERE recipe_id = r.id
-            ) stats ON TRUE
-            LEFT JOIN favorites fav ON fav.recipe_id = r.id AND fav.user_id = ?::uuid
-            LEFT JOIN ratings my ON my.recipe_id = r.id AND my.user_id = ?::uuid
+              GROUP BY recipe_id
+            ) stats ON stats.recipe_id = r.id
+            LEFT JOIN favorites fav ON fav.recipe_id = r.id AND fav.user_id = ?
+            LEFT JOIN ratings my ON my.recipe_id = r.id AND my.user_id = ?
             WHERE r.id = ?
             LIMIT 1
         """.trimIndent()
@@ -533,18 +535,19 @@ class ReadService {
               COALESCE(stats.likes_count, 0) AS likes_count,
               COALESCE(stats.dislikes_count, 0) AS dislikes_count,
               CASE WHEN fav.recipe_id IS NULL THEN FALSE ELSE TRUE END AS is_favorite,
-              my.value AS my_rating
+              my."value" AS my_rating
             FROM recipes r
             JOIN users u ON u.id = r.author_id
-            LEFT JOIN LATERAL (
+            LEFT JOIN (
               SELECT
-                SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END)::int AS likes_count,
-                SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END)::int AS dislikes_count
+                recipe_id,
+                SUM(CASE WHEN "value" = 1 THEN 1 ELSE 0 END)::int AS likes_count,
+                SUM(CASE WHEN "value" = -1 THEN 1 ELSE 0 END)::int AS dislikes_count
               FROM ratings
-              WHERE recipe_id = r.id
-            ) stats ON TRUE
-            LEFT JOIN favorites fav ON fav.recipe_id = r.id AND fav.user_id = ?::uuid
-            LEFT JOIN ratings my ON my.recipe_id = r.id AND my.user_id = ?::uuid
+              GROUP BY recipe_id
+            ) stats ON stats.recipe_id = r.id
+            LEFT JOIN favorites fav ON fav.recipe_id = r.id AND fav.user_id = ?
+            LEFT JOIN ratings my ON my.recipe_id = r.id AND my.user_id = ?
             $joinsSql$whereSql
             $orderSql
             $pageSql

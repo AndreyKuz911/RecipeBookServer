@@ -7,6 +7,7 @@ import java.net.URI
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.sql.SQLException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.DatabaseConfig
@@ -17,12 +18,21 @@ import org.slf4j.LoggerFactory
 
 object DatabaseFactory {
     private val logger = LoggerFactory.getLogger(DatabaseFactory::class.java)
+    private const val initMaxAttempts = 3
+
+    @Volatile
+    private var initConfigRef: AppConfig? = null
 
     @Volatile
     private var dataSourceRef: HikariDataSource? = null
 
     @Volatile
     private var databaseUrlRef: String? = null
+
+    @Volatile
+    private var autoCreateSchemaRef: Boolean = true
+
+    private val indexWarmupInProgress = AtomicBoolean(false)
 
     private data class JdbcConnection(
         val jdbcUrl: String,
@@ -31,20 +41,20 @@ object DatabaseFactory {
     )
 
     fun init(config: AppConfig) {
+        initConfigRef = config
+        autoCreateSchemaRef = config.autoCreateSchema
         connectWithRetries(
             url = config.databaseUrl,
             autoCreateSchema = config.autoCreateSchema,
-            maxAttempts = 6,
         )
     }
 
     private fun connectWithRetries(
         url: String,
         autoCreateSchema: Boolean,
-        maxAttempts: Int,
     ) {
         var lastError: Throwable? = null
-        repeat(maxAttempts) { index ->
+        repeat(initMaxAttempts) { index ->
             val attempt = index + 1
             var dataSource: HikariDataSource? = null
             try {
@@ -74,21 +84,21 @@ object DatabaseFactory {
                         )
                     }
                 }
-                ensureIndexesIfNeeded(dataSource)
+                scheduleIndexWarmup(dataSource)
 
                 if (attempt > 1) {
-                    logger.info("Database connection recovered on attempt {}/{}", attempt, maxAttempts)
+                    logger.info("Database connection recovered on attempt {}/{}", attempt, initMaxAttempts)
                 }
                 return
             } catch (t: Throwable) {
                 dataSource?.close()
                 lastError = t
                 val delayMs = min(5_000L * attempt, 20_000L)
-                if (attempt < maxAttempts) {
+                if (attempt < initMaxAttempts) {
                     logger.warn(
                         "Database init attempt {}/{} failed ({}). Retrying in {} ms",
                         attempt,
-                        maxAttempts,
+                        initMaxAttempts,
                         t.message ?: t::class.simpleName ?: "unknown error",
                         delayMs,
                     )
@@ -96,7 +106,7 @@ object DatabaseFactory {
                 }
             }
         }
-        throw IllegalStateException("Failed to connect to database after $maxAttempts attempts", lastError)
+        throw IllegalStateException("Failed to connect to database after $initMaxAttempts attempts", lastError)
     }
 
     fun connectForTests(databaseUrl: String) {
@@ -125,30 +135,13 @@ object DatabaseFactory {
     }
 
     fun dataSource(): HikariDataSource {
+        ensureInitialized()
         return dataSourceRef ?: error("Database is not initialized")
-    }
-
-    @Synchronized
-    fun reconnectDataSource() {
-        val url = databaseUrlRef ?: error("Database URL is not initialized")
-        val old = dataSourceRef
-        val fresh = hikari(url)
-        Database.connect(
-            datasource = fresh,
-            databaseConfig = DatabaseConfig {
-                if (!url.startsWith("jdbc:h2")) {
-                    explicitDialect = PostgreSQLDialect()
-                }
-                defaultMaxAttempts = 1
-            },
-        )
-        dataSourceRef = fresh
-        old?.close()
-        logger.warn("Database pool was recreated after a connection failure")
     }
 
     fun <T> withDbRetry(maxAttempts: Int = 2, block: () -> T): T {
         require(maxAttempts >= 1) { "maxAttempts must be >= 1" }
+        ensureInitialized()
         var lastError: Throwable? = null
         repeat(maxAttempts) { attempt ->
             try {
@@ -187,8 +180,9 @@ object DatabaseFactory {
             if (!isH2) {
                 addDataSourceProperty("gssEncMode", "disable")
                 addDataSourceProperty("tcpKeepAlive", "true")
-                addDataSourceProperty("connectTimeout", "5")
-                addDataSourceProperty("socketTimeout", "8")
+                addDataSourceProperty("sslmode", "require")
+                addDataSourceProperty("connectTimeout", "10")
+                addDataSourceProperty("socketTimeout", if (isPooler) "12" else "15")
                 if (isPooler) {
                     addDataSourceProperty("preparedStatementCacheQueries", "0")
                     addDataSourceProperty("preparedStatementCacheSizeMiB", "0")
@@ -197,12 +191,12 @@ object DatabaseFactory {
             }
 
             driverClassName = if (isH2) "org.h2.Driver" else "org.postgresql.Driver"
-            maximumPoolSize = if (isPooler) 2 else 6
-            minimumIdle = 1
-            connectionTimeout = 8_000
-            initializationFailTimeout = 60_000
+            maximumPoolSize = if (isPooler) 3 else 4
+            minimumIdle = 0
+            connectionTimeout = 12_000
+            initializationFailTimeout = 15_000
             maxLifetime = 30 * 60_000
-            idleTimeout = 5 * 60_000
+            idleTimeout = 2 * 60_000
             keepaliveTime = 120_000
             validationTimeout = 5_000
             connectionTestQuery = "SELECT 1"
@@ -211,6 +205,16 @@ object DatabaseFactory {
         }
 
         return HikariDataSource(config)
+    }
+
+    @Synchronized
+    private fun ensureInitialized() {
+        if (dataSourceRef != null) return
+        val config = initConfigRef ?: error("Database config is not initialized")
+        connectWithRetries(
+            url = config.databaseUrl,
+            autoCreateSchema = autoCreateSchemaRef,
+        )
     }
 
     private fun parseJdbcConnection(url: String): JdbcConnection {
@@ -230,11 +234,32 @@ object DatabaseFactory {
         )
     }
 
+    private fun scheduleIndexWarmup(dataSource: HikariDataSource) {
+        if (!dataSource.jdbcUrl.startsWith("jdbc:postgresql://")) return
+        if (!indexWarmupInProgress.compareAndSet(false, true)) return
+
+        Thread(
+            {
+                try {
+                    ensureIndexesIfNeeded(dataSource)
+                } finally {
+                    indexWarmupInProgress.set(false)
+                }
+            },
+            "recipebook-db-index-warmup",
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     private fun ensureIndexesIfNeeded(dataSource: HikariDataSource) {
         if (!dataSource.jdbcUrl.startsWith("jdbc:postgresql://")) return
         runCatching {
             dataSource.connection.use { connection ->
                 connection.createStatement().use { statement ->
+                    statement.queryTimeout = 5
+                    statement.execute("SET lock_timeout = '3s'")
                     statement.execute("CREATE INDEX IF NOT EXISTS idx_recipes_author_created ON recipes(author_id, created_at DESC)")
                     statement.execute("CREATE INDEX IF NOT EXISTS idx_ratings_recipe ON ratings(recipe_id)")
                     statement.execute("CREATE INDEX IF NOT EXISTS idx_ratings_recipe_value ON ratings(recipe_id, value)")

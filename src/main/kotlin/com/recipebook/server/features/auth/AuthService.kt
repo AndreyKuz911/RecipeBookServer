@@ -6,7 +6,6 @@ import com.recipebook.server.features.common.conflict
 import com.recipebook.server.features.common.serviceUnavailable
 import com.recipebook.server.features.common.unauthorized
 import com.recipebook.server.features.users.UserProfileDto
-import com.recipebook.server.features.users.UserService
 import com.recipebook.server.security.JwtService
 import com.recipebook.server.security.PasswordHasher
 import java.net.SocketException
@@ -21,8 +20,6 @@ import java.util.UUID
 class AuthService(
     private val passwordHasher: PasswordHasher,
     private val jwtService: JwtService,
-    @Suppress("UNUSED_PARAMETER")
-    private val userService: UserService,
 ) {
     fun register(request: RegisterRequest): AuthResponse {
         validateRegister(request)

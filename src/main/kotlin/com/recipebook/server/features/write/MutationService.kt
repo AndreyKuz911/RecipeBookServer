@@ -15,8 +15,6 @@ import com.recipebook.server.features.recipes.RecipeUpsertRequest
 import com.recipebook.server.features.users.UpdateProfileRequest
 import com.recipebook.server.features.users.UserProfileDto
 import com.recipebook.server.features.users.UserSummaryDto
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.sql.Timestamp
 import java.time.LocalDateTime
 import java.util.UUID
@@ -24,7 +22,7 @@ import java.util.UUID
 class MutationService(
     private val readService: ReadService,
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     fun updateProfile(userId: UUID, request: UpdateProfileRequest): UserProfileDto {
         validateUpdate(request)
@@ -201,7 +199,7 @@ class MutationService(
                 ensureAuthenticatedUserExists(connection, userId)
                 ensureRecipeExists(connection, recipeId)
                 val existing = connection.prepareStatement(
-                    "SELECT value FROM ratings WHERE recipe_id = ? AND user_id = ? LIMIT 1",
+                    """SELECT "value" FROM ratings WHERE recipe_id = ? AND user_id = ? LIMIT 1""",
                 ).use { statement ->
                     statement.setObject(1, recipeId)
                     statement.setObject(2, userId)
@@ -213,7 +211,7 @@ class MutationService(
                 when {
                     existing == null -> {
                         connection.prepareStatement(
-                            "INSERT INTO ratings (id, user_id, recipe_id, value) VALUES (?, ?, ?, ?)",
+                            """INSERT INTO ratings (id, user_id, recipe_id, "value") VALUES (?, ?, ?, ?)""",
                         ).use { statement ->
                             statement.setObject(1, UUID.randomUUID())
                             statement.setObject(2, userId)
@@ -233,7 +231,7 @@ class MutationService(
                     }
                     else -> {
                         connection.prepareStatement(
-                            "UPDATE ratings SET value = ? WHERE recipe_id = ? AND user_id = ?",
+                            """UPDATE ratings SET "value" = ? WHERE recipe_id = ? AND user_id = ?""",
                         ).use { statement ->
                             statement.setInt(1, request.value)
                             statement.setObject(2, recipeId)

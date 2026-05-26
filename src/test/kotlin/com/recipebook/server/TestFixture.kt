@@ -2,13 +2,11 @@ package com.recipebook.server
 
 import com.recipebook.server.config.JwtConfig
 import com.recipebook.server.database.DatabaseFactory
-import com.recipebook.server.database.RecipeCategories
-import com.recipebook.server.database.RecipesTable
 import com.recipebook.server.database.UsersTable
 import com.recipebook.server.features.auth.AuthService
-import com.recipebook.server.features.recipes.RecipeService
+import com.recipebook.server.features.read.ReadService
 import com.recipebook.server.features.recipes.RecipeUpsertRequest
-import com.recipebook.server.features.users.UserService
+import com.recipebook.server.features.write.MutationService
 import com.recipebook.server.security.JwtService
 import com.recipebook.server.security.PasswordHasher
 import org.jetbrains.exposed.sql.insert
@@ -23,7 +21,6 @@ fun prepareTestDatabase() {
 }
 
 fun authServiceFixture(): AuthService {
-    val userService = UserService()
     return AuthService(
         passwordHasher = PasswordHasher(),
         jwtService = JwtService(
@@ -34,11 +31,16 @@ fun authServiceFixture(): AuthService {
                 realm = "test-realm",
             ),
         ),
-        userService = userService,
     )
 }
 
-fun recipeServiceFixture(): RecipeService = RecipeService()
+fun recipeServiceFixture(): RecipeAppServiceFixture {
+    val readService = ReadService()
+    return RecipeAppServiceFixture(
+        readService = readService,
+        mutationService = MutationService(readService),
+    )
+}
 
 fun createUser(
     email: String = "user_${UUID.randomUUID()}@example.com",
@@ -72,4 +74,27 @@ fun createRecipe(authorId: UUID, title: String, category: String, cookingTimeMin
             imageUrls = listOf("https://example.com/image.jpg"),
         ),
     ).id.let(UUID::fromString)
+}
+
+class RecipeAppServiceFixture(
+    private val readService: ReadService,
+    private val mutationService: MutationService,
+) {
+    fun listRecipes(
+        page: Int,
+        limit: Int,
+        query: String?,
+        category: String?,
+        timeRange: String?,
+        sort: String?,
+        currentUserId: UUID?,
+    ) = readService.listRecipes(page, limit, query, category, timeRange, sort, currentUserId)
+
+    fun getRecipe(recipeId: UUID, currentUserId: UUID?) = readService.getRecipe(recipeId, currentUserId)
+
+    fun createRecipe(authorId: UUID, request: RecipeUpsertRequest) =
+        mutationService.createRecipe(authorId, request)
+
+    fun deleteRecipe(recipeId: UUID, actorId: UUID) =
+        mutationService.deleteRecipe(recipeId, actorId)
 }

@@ -21,19 +21,26 @@ fun main(args: Array<String>) {
     EngineMain.main(args)
 }
 
+@Suppress("unused")
 fun Application.module() {
     val appConfig = ConfigLoader.load()
     val passwordHasher = PasswordHasher()
-    val userService = com.recipebook.server.features.users.UserService()
     val jwtService = JwtService(appConfig.jwt)
-    val authService = AuthService(passwordHasher, jwtService, userService)
+    val authService = AuthService(passwordHasher, jwtService)
     val readService = ReadService()
     val mutationService = MutationService(readService)
     val newsService = NewsService()
 
-    DatabaseFactory.init(appConfig)
-    if (appConfig.autoCreateSchema && appConfig.seedOnStart) {
-        SeedData.seedIfNeeded(passwordHasher)
+    runCatching {
+        DatabaseFactory.init(appConfig)
+        if (appConfig.autoCreateSchema && appConfig.seedOnStart) {
+            SeedData.seedIfNeeded(passwordHasher)
+        }
+    }.onFailure { error ->
+        environment.log.warn(
+            "Database warm-up on startup failed: {}. The server will retry on the first request.",
+            error.message ?: error::class.simpleName ?: "unknown error",
+        )
     }
 
     configureSerialization()
