@@ -12,12 +12,9 @@ import com.recipebook.server.features.auth.PagedRecipesResponse
 import com.recipebook.server.features.comments.CommentDto
 import com.recipebook.server.features.common.badRequest
 import com.recipebook.server.features.common.notFound
-import com.recipebook.server.features.common.unauthorized
 import com.recipebook.server.features.recipes.RecipeDetailsDto
 import com.recipebook.server.features.recipes.RecipeSummaryDto
 import com.recipebook.server.features.users.UserProfileDto
-import com.recipebook.server.features.users.UserSummaryDto
-import java.sql.PreparedStatement
 import java.util.UUID
 
 class ReadService {
@@ -213,54 +210,7 @@ class ReadService {
     fun getProfile(targetUserId: UUID, viewerId: UUID?): UserProfileDto {
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT
-                      u.id,
-                      u.email,
-                      u.username,
-                      u.bio,
-                      u.avatar_url,
-                      u.created_at,
-                      (SELECT COUNT(*) FROM recipes r WHERE r.author_id = u.id) AS recipes_count,
-                      (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS followers_count,
-                      (SELECT COUNT(*) FROM follows f WHERE f.follower_id = u.id) AS following_count,
-                      CASE
-                        WHEN ? IS NULL OR ? = u.id THEN FALSE
-                        ELSE EXISTS(
-                          SELECT 1
-                          FROM follows f2
-                          WHERE f2.follower_id = ? AND f2.following_id = u.id
-                        )
-                      END AS is_following
-                    FROM users u
-                    WHERE u.id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    var i = 1
-                    i = statement.bindNullableUuid(i, viewerId)
-                    i = statement.bindNullableUuid(i, viewerId)
-                    i = statement.bindNullableUuid(i, viewerId)
-                    statement.setObject(i, targetUserId)
-
-                    statement.executeQuery().use { rs ->
-                        if (!rs.next()) {
-                            notFound("User not found")
-                        }
-                        UserProfileDto(
-                            id = rs.getObject("id", UUID::class.java).toString(),
-                            email = rs.getString("email"),
-                            username = rs.getString("username"),
-                            bio = rs.getString("bio"),
-                            avatarUrl = rs.getString("avatar_url"),
-                            createdAt = rs.getTimestamp("created_at").toLocalDateTime().toString(),
-                            recipesCount = rs.getInt("recipes_count"),
-                            followersCount = rs.getInt("followers_count"),
-                            followingCount = rs.getInt("following_count"),
-                            isFollowing = rs.getBoolean("is_following"),
-                        )
-                    }
-                }
+                queryProfile(connection, targetUserId, viewerId)
             }
         }
     }
@@ -268,41 +218,7 @@ class ReadService {
     fun getCurrentProfile(userId: UUID): UserProfileDto {
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT
-                      u.id,
-                      u.email,
-                      u.username,
-                      u.bio,
-                      u.avatar_url,
-                      u.created_at,
-                      (SELECT COUNT(*) FROM recipes r WHERE r.author_id = u.id) AS recipes_count,
-                      (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS followers_count,
-                      (SELECT COUNT(*) FROM follows f WHERE f.follower_id = u.id) AS following_count
-                    FROM users u
-                    WHERE u.id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, userId)
-                    statement.executeQuery().use { rs ->
-                        if (!rs.next()) {
-                            unauthorized("Session is no longer valid. Please sign in again")
-                        }
-                        UserProfileDto(
-                            id = rs.getObject("id", UUID::class.java).toString(),
-                            email = rs.getString("email"),
-                            username = rs.getString("username"),
-                            bio = rs.getString("bio"),
-                            avatarUrl = rs.getString("avatar_url"),
-                            createdAt = rs.getTimestamp("created_at").toLocalDateTime().toString(),
-                            recipesCount = rs.getInt("recipes_count"),
-                            followersCount = rs.getInt("followers_count"),
-                            followingCount = rs.getInt("following_count"),
-                            isFollowing = false,
-                        )
-                    }
-                }
+                queryCurrentProfile(connection, userId)
             }
         }
     }
@@ -310,51 +226,7 @@ class ReadService {
     fun listComments(recipeId: UUID): List<CommentDto> {
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                connection.requireRecipeExists(recipeId)
-                val flat = connection.prepareStatement(
-                    """
-                    SELECT
-                      c.id,
-                      c.recipe_id,
-                      c.parent_comment_id,
-                      c.text,
-                      c.created_at,
-                      u.id AS author_id,
-                      u.username AS author_username,
-                      u.avatar_url AS author_avatar
-                    FROM comments c
-                    JOIN users u ON u.id = c.author_id
-                    WHERE c.recipe_id = ?
-                    ORDER BY c.created_at DESC
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, recipeId)
-                    statement.executeQuery().use { rs ->
-                        mutableListOf<CommentDto>().apply {
-                            while (rs.next()) {
-                                add(
-                                    CommentDto(
-                                        id = rs.getObject("id", UUID::class.java).toString(),
-                                        recipeId = rs.getObject("recipe_id", UUID::class.java).toString(),
-                                        parentCommentId = rs.getObject("parent_comment_id", UUID::class.java)?.toString(),
-                                        text = rs.getString("text"),
-                                        createdAt = rs.getTimestamp("created_at").toLocalDateTime().toString(),
-                                        author = UserSummaryDto(
-                                            id = rs.getObject("author_id", UUID::class.java).toString(),
-                                            username = rs.getString("author_username"),
-                                            avatarUrl = rs.getString("author_avatar"),
-                                        ),
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-
-                val repliesByParent = flat.filter { it.parentCommentId != null }.groupBy { it.parentCommentId }
-                flat.filter { it.parentCommentId == null }.map { comment ->
-                    comment.copy(replies = repliesByParent[comment.id].orEmpty())
-                }
+                queryComments(connection, recipeId)
             }
         }
     }

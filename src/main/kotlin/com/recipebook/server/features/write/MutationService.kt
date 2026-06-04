@@ -29,7 +29,7 @@ class MutationService(
     private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     fun updateProfile(userId: UUID, request: UpdateProfileRequest): UserProfileDto {
-        validateUpdate(request)
+        validateProfileUpdate(request)
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(userId)
@@ -65,7 +65,7 @@ class MutationService(
     }
 
     fun createRecipe(authorId: UUID, request: RecipeUpsertRequest): RecipeDetailsDto {
-        validateRecipeRequest(request)
+        validateRecipeUpsert(request)
         val recipeId = UUID.randomUUID()
         val now = LocalDateTime.now()
 
@@ -110,7 +110,7 @@ class MutationService(
     }
 
     fun updateRecipe(recipeId: UUID, authorId: UUID, request: RecipeUpsertRequest): RecipeDetailsDto {
-        validateRecipeRequest(request)
+        validateRecipeUpsert(request)
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(authorId)
@@ -420,37 +420,6 @@ class MutationService(
                     statement.executeUpdate()
                 }
             }
-        }
-    }
-
-    private fun validateUpdate(request: UpdateProfileRequest) {
-        val username = request.username.trim()
-        if (username.length !in 3..50) {
-            badRequest("Username must contain from 3 to 50 characters")
-        }
-    }
-
-    private fun validateRecipeRequest(request: RecipeUpsertRequest) {
-        if (request.title.trim().length !in 1..50) {
-            badRequest("Title must contain from 1 to 50 characters")
-        }
-        if (request.description.trim().length !in 1..1000) {
-            badRequest("Description must contain from 1 to 1000 characters")
-        }
-        if (request.category.trim().isBlank()) {
-            badRequest("Category is required")
-        }
-        if (request.cookingTimeMinutes <= 0) {
-            badRequest("Cooking time must be greater than 0")
-        }
-        if (request.ingredients.isEmpty() || request.ingredients.any { it.isBlank() }) {
-            badRequest("Ingredients must contain at least one non-empty value")
-        }
-        if (request.steps.isEmpty() || request.steps.any { it.isBlank() }) {
-            badRequest("Steps must contain at least one non-empty value")
-        }
-        if (request.imageUrls.size > 5) {
-            badRequest("A recipe can contain at most 5 images")
         }
     }
 }
