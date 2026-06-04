@@ -1,6 +1,10 @@
 package com.recipebook.server.features.write
 
 import com.recipebook.server.database.DatabaseFactory
+import com.recipebook.server.database.findRecipeAuthorId
+import com.recipebook.server.database.requireAuthenticatedUserExists
+import com.recipebook.server.database.requireRecipeExists
+import com.recipebook.server.database.requireUserExists
 import com.recipebook.server.features.comments.CommentDto
 import com.recipebook.server.features.comments.CreateCommentRequest
 import com.recipebook.server.features.common.badRequest
@@ -28,15 +32,7 @@ class MutationService(
         validateUpdate(request)
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                val exists = connection.prepareStatement(
-                    "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, userId)
-                    statement.executeQuery().use { rs -> rs.next() }
-                }
-                if (!exists) {
-                    unauthorized("Session is no longer valid. Please sign in again")
-                }
+                connection.requireAuthenticatedUserExists(userId)
 
                 val duplicate = connection.prepareStatement(
                     "SELECT 1 FROM users WHERE username = ? AND id <> ? LIMIT 1",
@@ -75,15 +71,7 @@ class MutationService(
 
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                val userExists = connection.prepareStatement(
-                    "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, authorId)
-                    statement.executeQuery().use { rs -> rs.next() }
-                }
-                if (!userExists) {
-                    unauthorized("Session is no longer valid. Please sign in again")
-                }
+                connection.requireAuthenticatedUserExists(authorId)
 
                 connection.prepareStatement(
                     """
@@ -125,18 +113,8 @@ class MutationService(
         validateRecipeRequest(request)
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, authorId)
-                val recipeAuthorId = connection.prepareStatement(
-                    "SELECT author_id FROM recipes WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, recipeId)
-                    statement.executeQuery().use { rs ->
-                        if (!rs.next()) {
-                            notFound("Recipe not found")
-                        }
-                        rs.getObject("author_id", UUID::class.java)
-                    }
-                }
+                connection.requireAuthenticatedUserExists(authorId)
+                val recipeAuthorId = connection.findRecipeAuthorId(recipeId)
                 if (recipeAuthorId != authorId) {
                     forbidden("Only the author can edit this recipe")
                 }
@@ -167,18 +145,8 @@ class MutationService(
     fun deleteRecipe(recipeId: UUID, actorId: UUID) {
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, actorId)
-                val recipeAuthorId = connection.prepareStatement(
-                    "SELECT author_id FROM recipes WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, recipeId)
-                    statement.executeQuery().use { rs ->
-                        if (!rs.next()) {
-                            notFound("Recipe not found")
-                        }
-                        rs.getObject("author_id", UUID::class.java)
-                    }
-                }
+                connection.requireAuthenticatedUserExists(actorId)
+                val recipeAuthorId = connection.findRecipeAuthorId(recipeId)
                 if (recipeAuthorId != actorId) {
                     forbidden("Only the author can delete this recipe")
                 }
@@ -196,8 +164,8 @@ class MutationService(
         }
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, userId)
-                ensureRecipeExists(connection, recipeId)
+                connection.requireAuthenticatedUserExists(userId)
+                connection.requireRecipeExists(recipeId)
                 val existing = connection.prepareStatement(
                     """SELECT "value" FROM ratings WHERE recipe_id = ? AND user_id = ? LIMIT 1""",
                 ).use { statement ->
@@ -248,7 +216,7 @@ class MutationService(
     fun removeRating(recipeId: UUID, userId: UUID) {
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, userId)
+                connection.requireAuthenticatedUserExists(userId)
                 connection.prepareStatement("DELETE FROM ratings WHERE recipe_id = ? AND user_id = ?").use { statement ->
                     statement.setObject(1, recipeId)
                     statement.setObject(2, userId)
@@ -261,8 +229,8 @@ class MutationService(
     fun addFavorite(recipeId: UUID, userId: UUID): RecipeDetailsDto {
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, userId)
-                ensureRecipeExists(connection, recipeId)
+                connection.requireAuthenticatedUserExists(userId)
+                connection.requireRecipeExists(recipeId)
                 connection.prepareStatement(
                     """
                     INSERT INTO favorites (user_id, recipe_id)
@@ -282,7 +250,7 @@ class MutationService(
     fun removeFavorite(recipeId: UUID, userId: UUID) {
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, userId)
+                connection.requireAuthenticatedUserExists(userId)
                 connection.prepareStatement("DELETE FROM favorites WHERE user_id = ? AND recipe_id = ?").use { statement ->
                     statement.setObject(1, userId)
                     statement.setObject(2, recipeId)
@@ -299,8 +267,8 @@ class MutationService(
         }
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, userId)
-                ensureRecipeExists(connection, recipeId)
+                connection.requireAuthenticatedUserExists(userId)
+                connection.requireRecipeExists(recipeId)
                 val parentId = request.parentCommentId?.let { raw ->
                     runCatching { UUID.fromString(raw) }.getOrElse { badRequest("Invalid parentCommentId") }
                 }
@@ -379,7 +347,7 @@ class MutationService(
     fun deleteComment(commentId: UUID, actorId: UUID) {
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, actorId)
+                connection.requireAuthenticatedUserExists(actorId)
                 val comment = connection.prepareStatement(
                     "SELECT recipe_id, author_id FROM comments WHERE id = ? LIMIT 1",
                 ).use { statement ->
@@ -423,16 +391,8 @@ class MutationService(
         }
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, followerId)
-                val targetExists = connection.prepareStatement(
-                    "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, followingId)
-                    statement.executeQuery().use { rs -> rs.next() }
-                }
-                if (!targetExists) {
-                    notFound("User not found")
-                }
+                connection.requireAuthenticatedUserExists(followerId)
+                connection.requireUserExists(userId = followingId, asUnauthorized = false)
                 connection.prepareStatement(
                     """
                     INSERT INTO follows (follower_id, following_id)
@@ -451,7 +411,7 @@ class MutationService(
     fun unfollow(followerId: UUID, followingId: UUID) {
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
-                ensureAuthenticatedUserExists(connection, followerId)
+                connection.requireAuthenticatedUserExists(followerId)
                 connection.prepareStatement(
                     "DELETE FROM follows WHERE follower_id = ? AND following_id = ?",
                 ).use { statement ->
@@ -491,30 +451,6 @@ class MutationService(
         }
         if (request.imageUrls.size > 5) {
             badRequest("A recipe can contain at most 5 images")
-        }
-    }
-
-    private fun ensureAuthenticatedUserExists(connection: java.sql.Connection, userId: UUID) {
-        val exists = connection.prepareStatement(
-            "SELECT 1 FROM users WHERE id = ? LIMIT 1",
-        ).use { statement ->
-            statement.setObject(1, userId)
-            statement.executeQuery().use { rs -> rs.next() }
-        }
-        if (!exists) {
-            unauthorized("Session is no longer valid. Please sign in again")
-        }
-    }
-
-    private fun ensureRecipeExists(connection: java.sql.Connection, recipeId: UUID) {
-        val exists = connection.prepareStatement(
-            "SELECT 1 FROM recipes WHERE id = ? LIMIT 1",
-        ).use { statement ->
-            statement.setObject(1, recipeId)
-            statement.executeQuery().use { rs -> rs.next() }
-        }
-        if (!exists) {
-            notFound("Recipe not found")
         }
     }
 }
