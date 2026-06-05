@@ -5,8 +5,15 @@ import com.recipebook.server.database.DatabaseFactory
 import com.recipebook.server.database.UsersTable
 import com.recipebook.server.features.auth.AuthService
 import com.recipebook.server.features.read.ReadService
+import com.recipebook.server.features.read.repository.CommentReadRepository
+import com.recipebook.server.features.read.repository.ProfileReadRepository
+import com.recipebook.server.features.read.repository.RecipeReadRepository
 import com.recipebook.server.features.recipes.RecipeUpsertRequest
 import com.recipebook.server.features.write.MutationService
+import com.recipebook.server.features.write.repository.CommentWriteRepository
+import com.recipebook.server.features.write.repository.ProfileWriteRepository
+import com.recipebook.server.features.write.repository.RecipeWriteRepository
+import com.recipebook.server.features.write.repository.SocialWriteRepository
 import com.recipebook.server.security.JwtService
 import com.recipebook.server.security.PasswordHasher
 import org.jetbrains.exposed.sql.insert
@@ -35,10 +42,20 @@ fun authServiceFixture(): AuthService {
 }
 
 fun recipeServiceFixture(): RecipeAppServiceFixture {
-    val readService = ReadService()
+    val readService = ReadService(
+        recipeReadRepository = RecipeReadRepository(),
+        profileReadRepository = ProfileReadRepository(),
+        commentReadRepository = CommentReadRepository(),
+    )
     return RecipeAppServiceFixture(
         readService = readService,
-        mutationService = MutationService(readService),
+        mutationService = MutationService(
+            readService = readService,
+            profileWriteRepository = ProfileWriteRepository(),
+            recipeWriteRepository = RecipeWriteRepository(),
+            commentWriteRepository = CommentWriteRepository(),
+            socialWriteRepository = SocialWriteRepository(),
+        ),
     )
 }
 

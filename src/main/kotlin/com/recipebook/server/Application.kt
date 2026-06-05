@@ -6,7 +6,14 @@ import com.recipebook.server.database.SeedData
 import com.recipebook.server.features.auth.AuthService
 import com.recipebook.server.features.news.NewsService
 import com.recipebook.server.features.read.ReadService
+import com.recipebook.server.features.read.repository.CommentReadRepository
+import com.recipebook.server.features.read.repository.ProfileReadRepository
+import com.recipebook.server.features.read.repository.RecipeReadRepository
 import com.recipebook.server.features.write.MutationService
+import com.recipebook.server.features.write.repository.CommentWriteRepository
+import com.recipebook.server.features.write.repository.ProfileWriteRepository
+import com.recipebook.server.features.write.repository.RecipeWriteRepository
+import com.recipebook.server.features.write.repository.SocialWriteRepository
 import com.recipebook.server.plugins.configureHttp
 import com.recipebook.server.plugins.configureMonitoring
 import com.recipebook.server.plugins.configureSecurity
@@ -27,8 +34,21 @@ fun Application.module() {
     val passwordHasher = PasswordHasher()
     val jwtService = JwtService(appConfig.jwt)
     val authService = AuthService(passwordHasher, jwtService)
-    val readService = ReadService()
-    val mutationService = MutationService(readService)
+    val recipeReadRepository = RecipeReadRepository()
+    val profileReadRepository = ProfileReadRepository()
+    val commentReadRepository = CommentReadRepository()
+    val readService = ReadService(
+        recipeReadRepository = recipeReadRepository,
+        profileReadRepository = profileReadRepository,
+        commentReadRepository = commentReadRepository,
+    )
+    val mutationService = MutationService(
+        readService = readService,
+        profileWriteRepository = ProfileWriteRepository(),
+        recipeWriteRepository = RecipeWriteRepository(),
+        commentWriteRepository = CommentWriteRepository(),
+        socialWriteRepository = SocialWriteRepository(),
+    )
     val newsService = NewsService()
 
     runCatching {
