@@ -8,17 +8,13 @@ import com.recipebook.server.database.requireUserExists
 import com.recipebook.server.features.comments.CommentDto
 import com.recipebook.server.features.comments.CreateCommentRequest
 import com.recipebook.server.features.common.badRequest
-import com.recipebook.server.features.common.conflict
 import com.recipebook.server.features.common.forbidden
-import com.recipebook.server.features.common.notFound
-import com.recipebook.server.features.common.unauthorized
 import com.recipebook.server.features.read.ReadService
 import com.recipebook.server.features.recipes.RecipeDetailsDto
 import com.recipebook.server.features.recipes.RatingRequest
 import com.recipebook.server.features.recipes.RecipeUpsertRequest
 import com.recipebook.server.features.users.UpdateProfileRequest
 import com.recipebook.server.features.users.UserProfileDto
-import com.recipebook.server.features.users.UserSummaryDto
 import java.sql.Timestamp
 import java.time.LocalDateTime
 import java.util.UUID
@@ -33,17 +29,7 @@ class MutationService(
         return DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(userId)
-
-                val duplicate = connection.prepareStatement(
-                    "SELECT 1 FROM users WHERE username = ? AND id <> ? LIMIT 1",
-                ).use { statement ->
-                    statement.setString(1, request.username.trim())
-                    statement.setObject(2, userId)
-                    statement.executeQuery().use { rs -> rs.next() }
-                }
-                if (duplicate) {
-                    conflict("Username is already taken")
-                }
+                connection.requireUsernameAvailable(userId, request.username.trim())
 
                 connection.prepareStatement(
                     """
@@ -72,7 +58,6 @@ class MutationService(
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(authorId)
-
                 connection.prepareStatement(
                     """
                     INSERT INTO recipes (
@@ -114,10 +99,7 @@ class MutationService(
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(authorId)
-                val recipeAuthorId = connection.findRecipeAuthorId(recipeId)
-                if (recipeAuthorId != authorId) {
-                    forbidden("Only the author can edit this recipe")
-                }
+                connection.requireRecipeAuthor(recipeId, authorId, "edit")
 
                 connection.prepareStatement(
                     """
@@ -146,10 +128,7 @@ class MutationService(
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(actorId)
-                val recipeAuthorId = connection.findRecipeAuthorId(recipeId)
-                if (recipeAuthorId != actorId) {
-                    forbidden("Only the author can delete this recipe")
-                }
+                connection.requireRecipeAuthor(recipeId, actorId, "delete")
                 connection.prepareStatement("DELETE FROM recipes WHERE id = ?").use { statement ->
                     statement.setObject(1, recipeId)
                     statement.executeUpdate()
@@ -269,32 +248,7 @@ class MutationService(
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(userId)
                 connection.requireRecipeExists(recipeId)
-                val parentId = request.parentCommentId?.let { raw ->
-                    runCatching { UUID.fromString(raw) }.getOrElse { badRequest("Invalid parentCommentId") }
-                }
-
-                if (parentId != null) {
-                    val parentInfo = connection.prepareStatement(
-                        """
-                        SELECT parent_comment_id
-                        FROM comments
-                        WHERE id = ? AND recipe_id = ?
-                        LIMIT 1
-                        """.trimIndent(),
-                    ).use { statement ->
-                        statement.setObject(1, parentId)
-                        statement.setObject(2, recipeId)
-                        statement.executeQuery().use { rs ->
-                            if (!rs.next()) {
-                                badRequest("Parent comment not found")
-                            }
-                            rs.getObject("parent_comment_id", UUID::class.java)
-                        }
-                    }
-                    if (parentInfo != null) {
-                        badRequest("Only one nesting level is supported")
-                    }
-                }
+                val parentId = connection.resolveParentCommentId(recipeId, request.parentCommentId)
 
                 val commentId = UUID.randomUUID()
                 val createdAt = LocalDateTime.now()
@@ -317,27 +271,13 @@ class MutationService(
                     statement.executeUpdate()
                 }
 
-                val author = connection.prepareStatement(
-                    "SELECT id, username, avatar_url FROM users WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, userId)
-                    statement.executeQuery().use { rs ->
-                        rs.next()
-                        UserSummaryDto(
-                            id = rs.getObject("id", UUID::class.java).toString(),
-                            username = rs.getString("username"),
-                            avatarUrl = rs.getString("avatar_url"),
-                        )
-                    }
-                }
-
                 CommentDto(
                     id = commentId.toString(),
                     recipeId = recipeId.toString(),
                     parentCommentId = parentId?.toString(),
                     text = text,
                     createdAt = createdAt.toString(),
-                    author = author,
+                    author = connection.loadCommentAuthorSummary(userId),
                     replies = emptyList(),
                 )
             }
@@ -348,28 +288,8 @@ class MutationService(
         DatabaseFactory.withDbRetry(maxAttempts = 2) {
             DatabaseFactory.dataSource().connection.use { connection ->
                 connection.requireAuthenticatedUserExists(actorId)
-                val comment = connection.prepareStatement(
-                    "SELECT recipe_id, author_id FROM comments WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, commentId)
-                    statement.executeQuery().use { rs ->
-                        if (!rs.next()) {
-                            notFound("Comment not found")
-                        }
-                        rs.getObject("recipe_id", UUID::class.java) to rs.getObject("author_id", UUID::class.java)
-                    }
-                }
-                val recipeAuthor = connection.prepareStatement(
-                    "SELECT author_id FROM recipes WHERE id = ? LIMIT 1",
-                ).use { statement ->
-                    statement.setObject(1, comment.first)
-                    statement.executeQuery().use { rs ->
-                        if (!rs.next()) {
-                            notFound("Recipe not found")
-                        }
-                        rs.getObject("author_id", UUID::class.java)
-                    }
-                }
+                val comment = connection.loadCommentOwnership(commentId)
+                val recipeAuthor = connection.findRecipeAuthorId(comment.first)
                 val canDelete = comment.second == actorId || recipeAuthor == actorId
                 if (!canDelete) {
                     forbidden("You cannot delete this comment")
